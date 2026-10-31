@@ -65,7 +65,7 @@ class Container:
             ingestion, repository, settings.ingestion_workers, settings.ingestion_queue_size
         )
         retriever = HybridRetriever(settings, embedder, vector_index, lexical_index, reranker, repository)
-        registry = ModelRegistry(settings.model_dir)
+        registry = ModelRegistry(settings.model_dir, settings.model_refresh_seconds)
         trainer = RecommenderTrainer(settings, repository, embedder.dim)
         scheduler = TrainingScheduler(trainer, registry, repository, settings.rec_training_interval_seconds)
         recommender = RecommendationEngine(settings, repository, retriever, vector_index, embedder, registry)

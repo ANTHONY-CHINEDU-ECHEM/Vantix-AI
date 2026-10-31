@@ -53,7 +53,8 @@ class Settings(BaseSettings):
 
     # Service
     environment: str = "development"
-    host: str = "0.0.0.0"
+    # containers must bind all interfaces
+    host: str = "0.0.0.0"  # nosec B104
     port: int = 8080
     workers: int = 1
     log_level: str = "INFO"
@@ -152,6 +153,9 @@ class Settings(BaseSettings):
     rec_mmr_lambda: float = 0.8
 
     # Workers
+    # liveness only
+    worker_heartbeat_file: Path = Path("/tmp/vantix_worker_heartbeat")  # nosec B108
+    model_refresh_seconds: float = 30.0
     ingestion_workers: int = 2
     ingestion_queue_size: int = 10000
 

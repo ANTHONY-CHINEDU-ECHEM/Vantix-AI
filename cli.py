@@ -2,7 +2,10 @@
 
 Commands use positional arguments only:
 
+    vantix migrate
     vantix serve
+    vantix worker
+    vantix health
     vantix ingest PATH [TENANT]
     vantix events PATH [TENANT]
     vantix train [TENANT]
@@ -17,6 +20,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -48,16 +52,90 @@ def _print(data: object) -> None:
     print(json.dumps(data, indent=2, default=str))
 
 
+def cmd_migrate(_args: list[str]) -> int:
+    """Create or upgrade the database schema. Safe to run concurrently and repeatedly."""
+    from vantix.storage import Repository
+
+    repo = Repository(get_settings().database_url)
+    repo.init_schema()
+    repo.engine.dispose()
+    _print({"migrated": True})
+    return 0
+
+
+def cmd_worker(_args: list[str]) -> int:
+    """Run the dedicated training worker until SIGTERM or SIGINT.
+
+    The worker polls the database for tenants whose content or activity changed since their
+    last model, retrains them and persists models to the shared model directory, from which
+    API replicas hot reload. A heartbeat file is touched after every cycle for liveness probes.
+    """
+    import signal
+    import threading
+
+    from vantix.recommender.scheduler import TrainingScheduler
+
+    settings = get_settings()
+    container = _container()
+    interval = settings.rec_training_interval_seconds or 300
+    scheduler = TrainingScheduler(
+        container.trainer, container.registry, container.repository, interval, poll_database=True
+    )
+    heartbeat = Path(settings.worker_heartbeat_file)
+    stop = threading.Event()
+
+    def shutdown(_signum: int, _frame: object) -> None:
+        stop.set()
+        scheduler.stop()
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+    print(json.dumps({"worker": "started", "interval_seconds": interval}), flush=True)
+    while not stop.is_set():
+        trained = scheduler.run_cycle()
+        heartbeat.parent.mkdir(parents=True, exist_ok=True)
+        heartbeat.write_text(str(time.time()))
+        if trained:
+            print(json.dumps({"trained": trained}), flush=True)
+        stop.wait(interval)
+    container.stop()
+    return 0
+
+
+def cmd_health(_args: list[str]) -> int:
+    """Exit 0 when the worker heartbeat is fresh. Used as a Kubernetes liveness command."""
+    settings = get_settings()
+    interval = settings.rec_training_interval_seconds or 300
+    try:
+        age = time.time() - Path(settings.worker_heartbeat_file).stat().st_mtime
+    except OSError:
+        print("no heartbeat")
+        return 1
+    healthy = age < max(3 * interval, 600)
+    print(json.dumps({"heartbeat_age_seconds": round(age, 1), "healthy": healthy}))
+    return 0 if healthy else 1
+
+
 def cmd_serve(_args: list[str]) -> int:
     import uvicorn
 
     settings = get_settings()
+    workers = settings.workers
+    memory = settings.vector_backend.value == "memory" or settings.lexical_backend.value == "memory"
+    if memory and workers > 1:
+        # In memory indexes live inside each process, so several worker processes would each
+        # see a different index. Use Qdrant and OpenSearch to scale beyond one process.
+        print(
+            json.dumps({"warning": "memory indexes require a single worker process", "workers": 1}),
+            flush=True,
+        )
+        workers = 1
     uvicorn.run(
         "vantix.api.app:app_factory",
         factory=True,
         host=settings.host,
         port=settings.port,
-        workers=settings.workers,
+        workers=workers,
         log_level=settings.log_level.lower(),
         proxy_headers=True,
     )
@@ -167,7 +245,10 @@ def cmd_demo(args: list[str]) -> int:
 
 
 COMMANDS = {
+    "migrate": cmd_migrate,
     "serve": cmd_serve,
+    "worker": cmd_worker,
+    "health": cmd_health,
     "ingest": cmd_ingest,
     "events": cmd_events,
     "train": cmd_train,

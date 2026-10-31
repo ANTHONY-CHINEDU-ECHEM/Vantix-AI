@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Iterator
@@ -12,6 +13,7 @@ from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from pydantic import ValidationError
 
 from vantix import __version__
 from vantix.api.schemas import (
@@ -36,7 +38,7 @@ from vantix.assist import AssistRequest
 from vantix.config import Settings, get_settings
 from vantix.container import Container
 from vantix.domain.models import Interaction, InteractionType, Item
-from vantix.errors import NotFoundError, VantixError
+from vantix.errors import NotFoundError, ValidationFailed, VantixError
 from vantix.events.schemas import EventBatch, EventBatchResult
 from vantix.index.base import SearchFilter
 from vantix.observability.logging import (
@@ -53,6 +55,8 @@ from vantix.retrieval.hybrid import RetrievalRequest
 from vantix.security.auth import ApiKeyAuthenticator, CallerIdentity, RateLimiter, verify_signature
 
 log = get_logger(__name__)
+
+_REQUEST_ID_RE = re.compile(r"[A-Za-z0-9_.:]{1,64}")
 
 _FEEDBACK_TYPES = {
     ("click", "search"): InteractionType.SEARCH_CLICK,
@@ -101,7 +105,9 @@ def create_app(settings: Settings | None = None, container: Container | None = N
 
     @app.middleware("http")
     async def observe(request: Request, call_next):  # type: ignore[no-untyped-def]
-        rid = request.headers.get("x-request-id") or uuid.uuid4().hex
+        supplied = request.headers.get("x-request-id", "")
+        # Accept a caller supplied correlation id only if it is short and safe to log.
+        rid = supplied if _REQUEST_ID_RE.fullmatch(supplied) else uuid.uuid4().hex
         token = request_id_var.set(rid)
         start = time.perf_counter()
         status = 500
@@ -152,8 +158,7 @@ def create_app(settings: Settings | None = None, container: Container | None = N
         ctr = c(request)
         checks = {"vector_index": ctr.vector_index.healthy(), "lexical_index": ctr.lexical_index.healthy()}
         try:
-            ctr.repository.content_version("__readiness__")
-            checks["database"] = True
+            checks["database"] = ctr.repository.ping()
         except Exception:  # noqa: BLE001
             checks["database"] = False
         ok = all(checks.values())
@@ -213,7 +218,13 @@ def create_app(settings: Settings | None = None, container: Container | None = N
         raw = await request.body()
         if settings.webhook_secret:
             verify_signature(settings.webhook_secret, raw, signature, settings.webhook_tolerance_seconds)
-        batch = EventBatch.model_validate_json(raw)
+        try:
+            batch = EventBatch.model_validate_json(raw)
+        except ValidationError as exc:
+            raise ValidationFailed(
+                "Invalid event batch",
+                details={"errors": json.loads(exc.json(include_url=False))[:20]},
+            ) from exc
         return c(request).events.process(ident.tenant_id, batch)
 
     # Retrieval ------------------------------------------------------------------------
@@ -360,6 +371,20 @@ def create_app(settings: Settings | None = None, container: Container | None = N
         if inserted:
             ctr.scheduler.mark_dirty(ident.tenant_id)
         return FeedbackResponse(recorded=bool(inserted))
+
+    @app.delete("/v1/users/{user_id}/interactions", tags=["privacy"])
+    def erase_user(
+        user_id: str, request: Request, ident: CallerIdentity = Depends(identity)
+    ) -> dict[str, object]:
+        """Right to erasure: delete every interaction of a user in the caller's tenant.
+
+        The user disappears from collaborative and graph signals at the next training run, which
+        this call schedules immediately.
+        """
+        ctr = c(request)
+        removed = ctr.repository.delete_user_interactions(ident.tenant_id, user_id)
+        ctr.scheduler.mark_dirty(ident.tenant_id)
+        return {"user_id": user_id, "interactions_deleted": removed}
 
     # Administration -------------------------------------------------------------------
     @app.post("/v1/admin/train", tags=["administration"])

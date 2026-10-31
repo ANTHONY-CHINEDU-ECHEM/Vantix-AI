@@ -54,7 +54,8 @@ def request_with_retries(
 
 
 def _backoff(attempt: int, base: float, cap: float) -> float:
-    return min(cap, base * (2 ** (attempt - 1))) * (0.5 + random.random() / 2)
+    # jitter, not cryptography
+    return min(cap, base * (2 ** (attempt - 1))) * (0.5 + random.random() / 2)  # nosec B311
 
 
 def _retry_after(response: httpx.Response) -> float | None:
