@@ -31,6 +31,21 @@ class ImplicitALS:
         self.config = config
         self.user_factors: np.ndarray | None = None
         self.item_factors: np.ndarray | None = None
+        self._gram: np.ndarray | None = None
+        self._gram_source: int | None = None
+
+    def item_gram(self) -> np.ndarray:
+        """Return Y^T Y, computed once per set of item factors and reused by every fold in.
+
+        Without this cache each request would multiply the full item factor matrix, which is
+        O(items x factors^2) and dominates latency on large catalogues.
+        """
+        if self.item_factors is None:
+            raise RuntimeError("Model is not fitted")
+        if self._gram is None or self._gram_source != id(self.item_factors):
+            self._gram = (self.item_factors.T @ self.item_factors).astype(np.float32)
+            self._gram_source = id(self.item_factors)
+        return self._gram
 
     def fit(self, interactions: sparse.csr_matrix) -> ImplicitALS:
         """Fit on a users by items matrix of non negative implicit feedback strengths."""
@@ -76,7 +91,7 @@ class ImplicitALS:
             return None
         cfg = self.config
         y_all = self.item_factors
-        yty = y_all.T @ y_all
+        yty = self.item_gram()
         y = y_all[item_indices]
         conf = cfg.alpha * strengths.astype(np.float32)
         a = yty + (y.T * conf) @ y + cfg.regularization * np.eye(y_all.shape[1], dtype=np.float32)
@@ -84,12 +99,14 @@ class ImplicitALS:
         return np.linalg.solve(a, b).astype(np.float32)
 
     def score_items(self, user_vector: np.ndarray, item_indices: np.ndarray | None = None) -> np.ndarray:
-        assert self.item_factors is not None
+        if self.item_factors is None:
+            raise RuntimeError("Model is not fitted")
         factors = self.item_factors if item_indices is None else self.item_factors[item_indices]
         return factors @ user_vector
 
     def similar_items(self, item_index: int, top_n: int = 50) -> list[tuple[int, float]]:
-        assert self.item_factors is not None
+        if self.item_factors is None:
+            raise RuntimeError("Model is not fitted")
         factors = self.item_factors
         norms = np.linalg.norm(factors, axis=1)
         norms[norms == 0] = 1.0

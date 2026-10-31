@@ -7,6 +7,7 @@ import json
 import re
 import shutil
 import threading
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -49,6 +50,9 @@ class TenantModel:
     user_index: dict[str, int] = field(default_factory=dict)
     item_index: dict[str, int] = field(default_factory=dict)
     expertise_index: dict[str, int] = field(default_factory=dict)
+    # Snapshot of the data the model was trained on, used to decide when retraining is due.
+    content_version: int = 0
+    interaction_count: int = 0
 
     def __post_init__(self) -> None:
         self.reindex()
@@ -72,6 +76,9 @@ class RecommenderTrainer:
     def train(self, tenant_id: str, now: datetime | None = None) -> TenantModel:
         s = self.settings
         now = now or datetime.now(UTC)
+        # Read the snapshot before training so that changes arriving mid run trigger a new run.
+        content_version = self.repo.content_version(tenant_id)
+        interaction_count = self.repo.interaction_count(tenant_id)
         try:
             weights: dict[tuple[str, str], float] = defaultdict(float)
             popularity: dict[str, float] = defaultdict(float)
@@ -164,6 +171,8 @@ class RecommenderTrainer:
                 activity=_normalise_dict(activity),
                 expertise_users=expertise_users,
                 expertise=expertise,
+                content_version=content_version,
+                interaction_count=interaction_count,
             )
             self.repo.set_model_trained(tenant_id, now)
             MODEL_TRAININGS.labels(tenant=tenant_id, outcome="success").inc()
@@ -193,28 +202,59 @@ def _normalise_dict(values: dict[str, float]) -> dict[str, float]:
 
 
 class ModelRegistry:
-    """Holds the current model per tenant and persists models to disk for warm restarts."""
+    """Holds the current model per tenant and persists models to disk for warm restarts.
 
-    def __init__(self, model_dir: Path) -> None:
+    In a multi process deployment a dedicated worker trains and persists models to a shared
+    volume. Every process checks the persisted model's modification time at most once per
+    ``refresh_seconds`` and hot reloads newer models, so API replicas pick up retrained models
+    without restarts.
+    """
+
+    def __init__(self, model_dir: Path, refresh_seconds: float = 30.0) -> None:
         self.model_dir = Path(model_dir)
+        self.refresh_seconds = refresh_seconds
         self._models: dict[str, TenantModel] = {}
+        self._loaded_mtime: dict[str, float] = {}
+        self._checked_at: dict[str, float] = {}
         self._lock = threading.RLock()
 
     def get(self, tenant_id: str) -> TenantModel:
+        now = time.monotonic()
         with self._lock:
             model = self._models.get(tenant_id)
-        if model is None:
-            model = self.load(tenant_id) or TenantModel.empty(tenant_id)
-            with self._lock:
-                self._models.setdefault(tenant_id, model)
-                model = self._models[tenant_id]
+            due = now - self._checked_at.get(tenant_id, float("-inf")) >= self.refresh_seconds
+            if due:
+                self._checked_at[tenant_id] = now
+        if model is None or due:
+            mtime = self._disk_mtime(tenant_id)
+            if mtime is not None and mtime > self._loaded_mtime.get(tenant_id, float("-inf")):
+                loaded = self.load(tenant_id)
+                if loaded is not None and (model is None or loaded.trained_at >= model.trained_at):
+                    with self._lock:
+                        self._models[tenant_id] = loaded
+                        self._loaded_mtime[tenant_id] = mtime
+                    return loaded
+            if model is None:
+                model = TenantModel.empty(tenant_id)
+                with self._lock:
+                    model = self._models.setdefault(tenant_id, model)
         return model
+
+    def _disk_mtime(self, tenant_id: str) -> float | None:
+        try:
+            return (self._path(tenant_id) / "meta.json").stat().st_mtime
+        except OSError:
+            return None
 
     def put(self, model: TenantModel, persist: bool = True) -> None:
         with self._lock:
             self._models[model.tenant_id] = model
         if persist:
             self.save(model)
+            mtime = self._disk_mtime(model.tenant_id)
+            if mtime is not None:
+                with self._lock:
+                    self._loaded_mtime[model.tenant_id] = mtime
 
     def _path(self, tenant_id: str) -> Path:
         safe = re.sub(r"[^A-Za-z0-9_.]", "_", tenant_id)
@@ -236,6 +276,8 @@ class ModelRegistry:
             "expertise_users": model.expertise_users,
             "graph_nodes": model.graph.nodes if model.graph else [],
             "als_config": dataclasses.asdict(model.als.config) if model.als else None,
+            "content_version": model.content_version,
+            "interaction_count": model.interaction_count,
         }
         (tmp / "meta.json").write_text(json.dumps(meta))
         if model.als is not None and model.als.user_factors is not None:
@@ -278,6 +320,8 @@ class ModelRegistry:
                 activity=meta["activity"],
                 expertise_users=meta["expertise_users"],
                 expertise=expertise,
+                content_version=int(meta.get("content_version", 0)),
+                interaction_count=int(meta.get("interaction_count", 0)),
             )
         except Exception:  # noqa: BLE001
             log.exception("model_load_failed", extra={"tenant": tenant_id})

@@ -220,8 +220,8 @@ class RecommendationEngine:
                 candidates[item_id].add("context")
 
         if state.profile is not None and q.kind is not RecommendationKind.SIMILAR:
-            for hit in self.vectors.search(q.tenant_id, state.profile, pool, flt):
-                candidates[hit.chunk.item_id].add("content")
+            for vector_hit in self.vectors.search(q.tenant_id, state.profile, pool, flt):
+                candidates[vector_hit.chunk.item_id].add("content")
 
         collab_scores: dict[str, float] = {}
         if model.als is not None:

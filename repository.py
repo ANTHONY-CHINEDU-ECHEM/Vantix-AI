@@ -6,6 +6,10 @@ which is what ``vantix reindex`` does.
 
 from __future__ import annotations
 
+import contextlib
+import sqlite3
+import threading
+import time
 import uuid
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
@@ -14,9 +18,9 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from sqlalchemy import and_, create_engine, delete, event, func, insert, select, update
+from sqlalchemy import and_, create_engine, delete, event, func, insert, or_, select, text, update
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from vantix.domain.models import (
     AccessControl,
@@ -29,6 +33,9 @@ from vantix.domain.models import (
     utcnow,
 )
 from vantix.storage import schema
+
+_SQLITE_INIT_LOCK = threading.Lock()
+_SCHEMA_LOCK_KEY = 7_302_118_446  # arbitrary constant identifying the Vantix schema lock
 
 
 def encode_vector(vector: np.ndarray | None) -> bytes | None:
@@ -85,7 +92,36 @@ class Repository:
 
     # Schema ---------------------------------------------------------------------------
     def init_schema(self) -> None:
-        schema.metadata.create_all(self.engine)
+        """Create tables and indexes if missing.
+
+        On PostgreSQL a transaction scoped advisory lock serialises concurrent callers, so many
+        replicas (or a migration job racing a rollout) can start at once without
+        "relation already exists" failures.
+        """
+        if self.engine.dialect.name == "postgresql":
+            with self.engine.begin() as conn:
+                conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _SCHEMA_LOCK_KEY})
+                schema.metadata.create_all(conn)
+        else:
+            # SQLite has no advisory locks: serialise creators within this process, and retry
+            # transient contention from other processes ("already exists" after a lost race,
+            # or "database is locked" while another connection holds the write lock).
+            with _SQLITE_INIT_LOCK:
+                for attempt in range(8):
+                    try:
+                        schema.metadata.create_all(self.engine)
+                        return
+                    except OperationalError as exc:
+                        message = str(exc)
+                        transient = "already exists" in message or "locked" in message
+                        if not transient or attempt == 7:
+                            raise
+                        time.sleep(0.05 * (2**attempt))
+
+    def ping(self) -> bool:
+        with self.engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True
 
     # Items ----------------------------------------------------------------------------
     def get_item(self, tenant_id: str, item_id: str, *, include_deleted: bool = False) -> StoredItem | None:
@@ -149,7 +185,27 @@ class Repository:
         embedding: np.ndarray | None,
         chunks: list[tuple[Chunk, np.ndarray | None]],
     ) -> None:
-        """Insert or replace an item and all of its chunks in a single transaction."""
+        """Insert or replace an item and all of its chunks in a single transaction.
+
+        Two workers may race to insert the same new item. The loser hits a primary key
+        violation, its transaction rolls back, and the retry takes the update path.
+        """
+        for attempt in range(3):
+            try:
+                self._upsert_item_once(tenant_id, item, content_hash, embedding, chunks)
+                return
+            except IntegrityError:
+                if attempt == 2:
+                    raise
+
+    def _upsert_item_once(
+        self,
+        tenant_id: str,
+        item: Item,
+        content_hash: str,
+        embedding: np.ndarray | None,
+        chunks: list[tuple[Chunk, np.ndarray | None]],
+    ) -> None:
         t = schema.items
         c = schema.chunks
         row = _item_to_row(tenant_id, item, content_hash, embedding)
@@ -250,37 +306,68 @@ class Repository:
             last = rows[-1]["chunk_id"]
 
     def list_tenants(self) -> list[str]:
-        t = schema.items
+        """Every tenant that has content or activity."""
         with self.engine.connect() as conn:
-            return [r[0] for r in conn.execute(select(t.c.tenant_id).distinct())]
+            found = {r[0] for r in conn.execute(select(schema.items.c.tenant_id).distinct())}
+            found |= {r[0] for r in conn.execute(select(schema.interactions.c.tenant_id).distinct())}
+        return sorted(found)
+
+    def interaction_count(self, tenant_id: str) -> int:
+        t = schema.interactions
+        with self.engine.connect() as conn:
+            return int(
+                conn.execute(
+                    select(func.count()).select_from(t).where(t.c.tenant_id == tenant_id)
+                ).scalar_one()
+            )
 
     # Interactions ---------------------------------------------------------------------
     def add_interactions(self, tenant_id: str, interactions: Iterable[Interaction]) -> int:
-        """Insert interactions idempotently. Returns the number of new rows."""
+        """Insert interactions idempotently in bulk. Returns the number of new rows.
+
+        Duplicates are detected both against stored rows and inside the batch itself, using one
+        existence query per 500 events rather than one query per event.
+        """
         t = schema.interactions
+        unique = list({it.event_id: it for it in interactions}.values())
         inserted = 0
         with self.engine.begin() as conn:
-            for it in interactions:
-                exists = conn.execute(
-                    select(t.c.event_id).where(and_(t.c.tenant_id == tenant_id, t.c.event_id == it.event_id))
-                ).first()
-                if exists:
-                    continue
-                conn.execute(
-                    insert(t).values(
-                        tenant_id=tenant_id,
-                        event_id=it.event_id,
-                        user_id=it.user_id,
-                        item_id=it.item_id,
-                        type=it.type.value,
-                        weight=it.weight,
-                        occurred_at=it.occurred_at,
-                        project_id=it.project_id,
-                        query=it.query,
+            for start in range(0, len(unique), 500):
+                batch = unique[start : start + 500]
+                existing = {
+                    r[0]
+                    for r in conn.execute(
+                        select(t.c.event_id).where(
+                            and_(t.c.tenant_id == tenant_id, t.c.event_id.in_([i.event_id for i in batch]))
+                        )
                     )
-                )
-                inserted += 1
+                }
+                rows = [
+                    {
+                        "tenant_id": tenant_id,
+                        "event_id": it.event_id,
+                        "user_id": it.user_id,
+                        "item_id": it.item_id,
+                        "type": it.type.value,
+                        "weight": it.weight,
+                        "occurred_at": it.occurred_at,
+                        "project_id": it.project_id,
+                        "query": it.query,
+                    }
+                    for it in batch
+                    if it.event_id not in existing
+                ]
+                if rows:
+                    conn.execute(insert(t), rows)
+                    inserted += len(rows)
         return inserted
+
+    def delete_user_interactions(self, tenant_id: str, user_id: str) -> int:
+        """Erase a user's interaction history (right to erasure). Returns rows removed."""
+        t = schema.interactions
+        with self.engine.begin() as conn:
+            result = conn.execute(delete(t).where(and_(t.c.tenant_id == tenant_id, t.c.user_id == user_id)))
+        return int(result.rowcount or 0)
 
     def user_interactions(
         self, tenant_id: str, user_id: str, *, limit: int = 200
@@ -299,26 +386,36 @@ class Repository:
     def iter_interactions(
         self, tenant_id: str, *, since: datetime | None = None, batch_size: int = 5000
     ) -> Iterator[tuple[str, str, str, float, datetime]]:
-        """Yield (user_id, item_id, type, weight, occurred_at) in time order."""
+        """Yield (user_id, item_id, type, weight, occurred_at) in time order.
+
+        Uses keyset pagination on (occurred_at, event_id), so each page is an index range scan
+        and the total cost stays linear in the number of interactions.
+        """
         t = schema.interactions
-        offset = 0
+        last: tuple[datetime, str] | None = None
         while True:
             stmt = (
-                select(t.c.user_id, t.c.item_id, t.c.type, t.c.weight, t.c.occurred_at)
+                select(t.c.user_id, t.c.item_id, t.c.type, t.c.weight, t.c.occurred_at, t.c.event_id)
                 .where(t.c.tenant_id == tenant_id)
                 .order_by(t.c.occurred_at, t.c.event_id)
-                .offset(offset)
                 .limit(batch_size)
             )
             if since is not None:
                 stmt = stmt.where(t.c.occurred_at >= since)
+            if last is not None:
+                stmt = stmt.where(
+                    or_(
+                        t.c.occurred_at > last[0],
+                        and_(t.c.occurred_at == last[0], t.c.event_id > last[1]),
+                    )
+                )
             with self.engine.connect() as conn:
                 rows = list(conn.execute(stmt))
             if not rows:
                 return
             for r in rows:
                 yield r[0], r[1], r[2], float(r[3]), ensure_utc(r[4])  # type: ignore[misc]
-            offset += len(rows)
+            last = (rows[-1][4], rows[-1][5])
 
     # Idempotency ----------------------------------------------------------------------
     def claim_event(self, tenant_id: str, event_id: str) -> bool:
@@ -330,6 +427,20 @@ class Repository:
             return True
         except IntegrityError:
             return False
+
+    def release_events(self, tenant_id: str, event_ids: Iterable[str]) -> None:
+        """Forget claimed events whose processing failed, so a retry is not treated as a duplicate."""
+        ids = list(event_ids)
+        if not ids:
+            return
+        t = schema.processed_events
+        with self.engine.begin() as conn:
+            for start in range(0, len(ids), 500):
+                conn.execute(
+                    delete(t).where(
+                        and_(t.c.tenant_id == tenant_id, t.c.event_id.in_(ids[start : start + 500]))
+                    )
+                )
 
     # Jobs -----------------------------------------------------------------------------
     def create_job(self, tenant_id: str, total: int) -> str:
@@ -401,16 +512,31 @@ class Repository:
         )
 
     # Tenant state ---------------------------------------------------------------------
+    def _ensure_tenant_state(self, tenant_id: str) -> None:
+        """Create the tenant state row if missing. Safe under concurrent callers."""
+        try:
+            with self.engine.begin() as conn:
+                conn.execute(insert(schema.tenant_state).values(tenant_id=tenant_id, content_version=0))
+        except IntegrityError:
+            pass  # another writer created it first
+
     def bump_content_version(self, tenant_id: str) -> int:
+        """Atomically increment the tenant content version (used to invalidate caches)."""
         t = schema.tenant_state
-        with self.engine.begin() as conn:
-            row = conn.execute(select(t.c.content_version).where(t.c.tenant_id == tenant_id)).first()
-            if row is None:
-                conn.execute(insert(t).values(tenant_id=tenant_id, content_version=1))
-                return 1
-            version = int(row[0]) + 1
-            conn.execute(update(t).where(t.c.tenant_id == tenant_id).values(content_version=version))
-            return version
+        for _ in range(2):
+            with self.engine.begin() as conn:
+                result = conn.execute(
+                    update(t)
+                    .where(t.c.tenant_id == tenant_id)
+                    .values(content_version=t.c.content_version + 1)
+                )
+                if result.rowcount:
+                    version = conn.execute(
+                        select(t.c.content_version).where(t.c.tenant_id == tenant_id)
+                    ).scalar_one()
+                    return int(version)
+            self._ensure_tenant_state(tenant_id)
+        raise RuntimeError(f"Could not update tenant state for {tenant_id}")
 
     def content_version(self, tenant_id: str) -> int:
         t = schema.tenant_state
@@ -420,12 +546,9 @@ class Repository:
 
     def set_model_trained(self, tenant_id: str, when: datetime) -> None:
         t = schema.tenant_state
+        self._ensure_tenant_state(tenant_id)
         with self.engine.begin() as conn:
-            row = conn.execute(select(t.c.tenant_id).where(t.c.tenant_id == tenant_id)).first()
-            if row is None:
-                conn.execute(insert(t).values(tenant_id=tenant_id, content_version=0, model_trained_at=when))
-            else:
-                conn.execute(update(t).where(t.c.tenant_id == tenant_id).values(model_trained_at=when))
+            conn.execute(update(t).where(t.c.tenant_id == tenant_id).values(model_trained_at=when))
 
     def stats(self, tenant_id: str) -> dict[str, Any]:
         with self.engine.connect() as conn:
@@ -458,10 +581,16 @@ class Repository:
 
 def _sqlite_pragmas(dbapi_conn: Any, _record: Any) -> None:
     cursor = dbapi_conn.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.execute("PRAGMA foreign_keys=ON")
-    cursor.close()
+    try:
+        cursor.execute("PRAGMA busy_timeout=30000")
+        # WAL is persistent in the database file; if another connection is switching it at
+        # this moment the switch is already happening, so contention here is harmless.
+        with contextlib.suppress(sqlite3.OperationalError):
+            cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA foreign_keys=ON")
+    finally:
+        cursor.close()
 
 
 def _item_to_row(

@@ -1,44 +1,57 @@
-"""Standard offline ranking metrics."""
+"""Prometheus metrics. Exposed at ``/v1/metrics``."""
 
 from __future__ import annotations
 
-import math
-from collections.abc import Sequence
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
+
+REGISTRY = CollectorRegistry(auto_describe=True)
+
+_LATENCY_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0)
+
+HTTP_REQUESTS = Counter(
+    "vantix_http_requests_total",
+    "HTTP requests by route and status",
+    ["method", "route", "status"],
+    registry=REGISTRY,
+)
+HTTP_LATENCY = Histogram(
+    "vantix_http_request_seconds",
+    "HTTP request latency",
+    ["method", "route"],
+    buckets=_LATENCY_BUCKETS,
+    registry=REGISTRY,
+)
+STAGE_LATENCY = Histogram(
+    "vantix_stage_seconds",
+    "Latency of internal pipeline stages",
+    ["stage"],
+    buckets=_LATENCY_BUCKETS,
+    registry=REGISTRY,
+)
+ITEMS_INDEXED = Counter("vantix_items_indexed_total", "Items indexed", ["tenant"], registry=REGISTRY)
+CHUNKS_INDEXED = Counter("vantix_chunks_indexed_total", "Chunks indexed", ["tenant"], registry=REGISTRY)
+EVENTS_RECEIVED = Counter("vantix_events_total", "Events received", ["type", "outcome"], registry=REGISTRY)
+CACHE_HITS = Counter("vantix_cache_hits_total", "Cache hits", ["cache"], registry=REGISTRY)
+CACHE_MISSES = Counter("vantix_cache_misses_total", "Cache misses", ["cache"], registry=REGISTRY)
+QUEUE_DEPTH = Gauge("vantix_ingestion_queue_depth", "Pending ingestion jobs", registry=REGISTRY)
+RAG_ABSTENTIONS = Counter(
+    "vantix_rag_abstentions_total", "Questions answered with an abstention", registry=REGISTRY
+)
+MODEL_TRAININGS = Counter(
+    "vantix_model_trainings_total", "Recommender training runs", ["tenant", "outcome"], registry=REGISTRY
+)
 
 
-def precision_at_k(ranked: Sequence[str], relevant: set[str], k: int) -> float:
-    if k <= 0:
-        return 0.0
-    return sum(1 for r in ranked[:k] if r in relevant) / k
+class Timer:
+    """Context manager recording a stage duration."""
 
+    def __init__(self, stage: str) -> None:
+        self._stage = stage
+        self._ctx = STAGE_LATENCY.labels(stage=stage).time()
 
-def recall_at_k(ranked: Sequence[str], relevant: set[str], k: int) -> float:
-    if not relevant:
-        return 0.0
-    return sum(1 for r in ranked[:k] if r in relevant) / len(relevant)
+    def __enter__(self) -> Timer:
+        self._ctx.__enter__()
+        return self
 
-
-def hit_rate_at_k(ranked: Sequence[str], relevant: set[str], k: int) -> float:
-    return 1.0 if any(r in relevant for r in ranked[:k]) else 0.0
-
-
-def reciprocal_rank(ranked: Sequence[str], relevant: set[str]) -> float:
-    for i, r in enumerate(ranked, start=1):
-        if r in relevant:
-            return 1.0 / i
-    return 0.0
-
-
-def ndcg_at_k(ranked: Sequence[str], relevant: set[str] | dict[str, float], k: int) -> float:
-    gains = relevant if isinstance(relevant, dict) else {r: 1.0 for r in relevant}
-    dcg = sum(gains.get(r, 0.0) / math.log2(i + 2) for i, r in enumerate(ranked[:k]))
-    ideal = sorted(gains.values(), reverse=True)[:k]
-    idcg = sum(g / math.log2(i + 2) for i, g in enumerate(ideal))
-    return dcg / idcg if idcg > 0 else 0.0
-
-
-def summarise(per_query: list[dict[str, float]]) -> dict[str, float]:
-    if not per_query:
-        return {}
-    keys = per_query[0].keys()
-    return {key: round(sum(q[key] for q in per_query) / len(per_query), 4) for key in keys}
+    def __exit__(self, *exc: object) -> None:
+        self._ctx.__exit__(*exc)  # type: ignore[arg-type]

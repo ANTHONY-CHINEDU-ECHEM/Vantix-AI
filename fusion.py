@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TypeVar
 
 T = TypeVar("T")
 
 
 def weighted_rrf(
-    rankings: dict[str, Sequence[str]], weights: dict[str, float], k: int = 60
+    rankings: Mapping[str, Sequence[str]], weights: Mapping[str, float], k: int = 60
 ) -> dict[str, float]:
     """Weighted Reciprocal Rank Fusion.
 
