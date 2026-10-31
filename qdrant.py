@@ -149,7 +149,7 @@ class QdrantVectorIndex(VectorIndex):
             self._client,
             "POST",
             f"/collections/{self.collection}/points/count",
-            json={"filter": {"must": [{"key": "tenant_id", "match": {"value": tenant_id}}]}, "exact": False},
+            json={"filter": {"must": [{"key": "tenant_id", "match": {"value": tenant_id}}]}, "exact": True},
         )
         return int(response.json()["result"]["count"])
 

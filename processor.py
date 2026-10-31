@@ -31,6 +31,7 @@ class EventProcessor:
         deletes: dict[str, None] = {}
         interactions: list[Interaction] = []
         duplicates = 0
+        claimed: list[str] = []
 
         for event in sorted(batch.events, key=lambda e: e.occurred_at):
             if isinstance(event, InteractionRecordedEvent):
@@ -52,6 +53,7 @@ class EventProcessor:
                 duplicates += 1
                 EVENTS_RECEIVED.labels(type=event.type, outcome="duplicate").inc()
                 continue
+            claimed.append(event.event_id)
             EVENTS_RECEIVED.labels(type=event.type, outcome="accepted").inc()
             if isinstance(event, ItemUpsertedEvent):
                 deletes.pop(event.data.id, None)
@@ -72,7 +74,13 @@ class EventProcessor:
 
         job_id = None
         if upserts or deletes:
-            job_id = self.queue.submit(tenant_id, list(upserts.values()), list(deletes))
+            try:
+                job_id = self.queue.submit(tenant_id, list(upserts.values()), list(deletes))
+            except Exception:
+                # The work never reached the queue: release the claims so that the host's retry
+                # of this batch is processed instead of being discarded as a duplicate.
+                self.repo.release_events(tenant_id, claimed)
+                raise
 
         total_duplicates = duplicates + interaction_duplicates
         return EventBatchResult(

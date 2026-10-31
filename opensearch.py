@@ -57,7 +57,7 @@ _MAPPING = {
 
 
 class OpenSearchLexicalIndex(LexicalIndex):
-    def __init__(self, url: str, index: str, username: str = "", password: str = "") -> None:
+    def __init__(self, url: str, index: str, username: str = "", password: str = "") -> None:  # nosec B107
         auth = (username, password) if username else None
         self._client = httpx.Client(base_url=url.rstrip("/"), auth=auth, timeout=30.0)
         self.index = index
