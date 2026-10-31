@@ -33,7 +33,15 @@ dependencies = [
 postgres = ["psycopg[binary]>=3.1"]
 models = ["sentence-transformers>=2.7"]
 tokenizer = ["tiktoken>=0.6"]
-dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.4", "mypy>=1.10"]
+dev = [
+  "pytest>=8",
+  "pytest-cov>=5",
+  "pytest-timeout>=2.3",
+  "ruff>=0.4",
+  "mypy>=1.10",
+  "bandit[sarif]>=1.7",
+  "pip-audit>=2.7",
+]
 all = ["vantix[postgres,models,tokenizer]"]
 
 [project.scripts]
@@ -45,7 +53,26 @@ packages = ["src/vantix"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "-q"
+addopts = "-q --timeout=300"
+filterwarnings = [
+  # Deprecations raised by Vantix itself fail the build.
+  "error::DeprecationWarning:vantix.*",
+  # Upstream: Starlette's test client asks for its httpx successor; harmless for our tests.
+  "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]
+
+[tool.coverage.run]
+source = ["vantix"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]
+
+[tool.bandit]
+exclude_dirs = ["tests"]
 
 [tool.ruff]
 line-length = 110

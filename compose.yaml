@@ -1,29 +1,66 @@
-# Production shaped local stack: Vantix with PostgreSQL, Qdrant and OpenSearch.
-# Start with: docker compose up
+# Production shaped local stack: Vantix API, training worker and migrations with
+# PostgreSQL, Qdrant and OpenSearch. Start with: docker compose up
 name: vantix
 
+x-vantix: &vantix
+  build: .
+  env_file:
+    - path: .env
+      required: false
+  environment: &vantix_env
+    VANTIX_DATABASE_URL: postgresql+psycopg://vantix:vantix@postgres:5432/vantix
+    VANTIX_VECTOR_BACKEND: qdrant
+    VANTIX_QDRANT_URL: http://qdrant:6333
+    VANTIX_LEXICAL_BACKEND: opensearch
+    VANTIX_OPENSEARCH_URL: http://opensearch:9200
+    VANTIX_MODEL_DIR: /data/models
+  volumes:
+    - vantix_data:/data
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
 services:
-  vantix:
-    build: .
-    env_file: .env
-    environment:
-      VANTIX_DATABASE_URL: postgresql+psycopg://vantix:vantix@postgres:5432/vantix
-      VANTIX_VECTOR_BACKEND: qdrant
-      VANTIX_QDRANT_URL: http://qdrant:6333
-      VANTIX_LEXICAL_BACKEND: opensearch
-      VANTIX_OPENSEARCH_URL: http://opensearch:9200
-      VANTIX_MODEL_DIR: /data/models
-    ports:
-      - "8080:8080"
-    volumes:
-      - vantix_data:/data
+  migrate:
+    <<: *vantix
+    command: ["migrate"]
+    restart: "no"
     depends_on:
       postgres:
         condition: service_healthy
+
+  vantix:
+    <<: *vantix
+    command: ["serve"]
+    environment:
+      <<: *vantix_env
+      VANTIX_REC_TRAINING_INTERVAL_SECONDS: "0"
+    ports:
+      - "8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
       qdrant:
         condition: service_started
       opensearch:
         condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    <<: *vantix
+    command: ["worker"]
+    environment:
+      <<: *vantix_env
+      VANTIX_REC_TRAINING_INTERVAL_SECONDS: "300"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "vantix", "health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
     restart: unless-stopped
 
   postgres:
@@ -41,14 +78,14 @@ services:
       retries: 20
 
   qdrant:
-    image: qdrant/qdrant:v1.12.4
+    image: qdrant/qdrant:v1.20.0
     volumes:
       - qdrant_data:/qdrant/storage
     ports:
       - "6333:6333"
 
   opensearch:
-    image: opensearchproject/opensearch:2.17.1
+    image: opensearchproject/opensearch:2.19.7
     environment:
       discovery.type: single-node
       DISABLE_SECURITY_PLUGIN: "true"
