@@ -1,0 +1,16 @@
+{
+  "retrieval": {
+    "ndcg@10": 0.90,
+    "mrr": 0.85,
+    "hit_rate@10": 0.95,
+    "recall@10": 0.95
+  },
+  "recommender": {
+    "hit_rate@10": 0.20,
+    "catalogue_coverage": 0.30
+  },
+  "load": {
+    "p95_ms": 1500,
+    "max_error_rate": 0.0
+  }
+}

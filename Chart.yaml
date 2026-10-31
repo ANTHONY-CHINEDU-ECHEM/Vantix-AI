@@ -1,0 +1,11 @@
+apiVersion: v2
+name: vantix
+description: Vantix AI hybrid recommender and RAG engine (API, training worker and schema migrations)
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+kubeVersion: ">=1.27.0-0"
+keywords: [recommender, rag, search, project-management]
+maintainers:
+  - name: Phexara Ltd
+home: https://phexara.com

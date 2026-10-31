@@ -1,0 +1,20 @@
+config:
+  VANTIX_ENVIRONMENT: staging
+  VANTIX_LOG_LEVEL: DEBUG
+api:
+  replicaCount: 1
+  workers: 1
+  autoscaling:
+    enabled: false
+  podDisruptionBudget:
+    enabled: false
+worker:
+  trainingIntervalSeconds: 300
+persistence:
+  size: 2Gi
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: vantix.staging.example.internal
+      paths: [{path: /, pathType: Prefix}]

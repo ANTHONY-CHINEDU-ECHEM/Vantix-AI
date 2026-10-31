@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import json
-import time
 
 from fastapi.testclient import TestClient
 
-from tests.conftest import ADMIN_KEY, SECRET, load_events, load_items
+from tests.conftest import ADMIN_KEY, SECRET, load_events, load_items, wait_for
 from vantix.security.auth import sign_payload, verify_signature
 
 PRINCIPAL = {"user_id": "amara", "project_ids": ["p_platform"], "group_ids": ["eng", "leads"]}
@@ -105,11 +104,10 @@ def test_async_ingestion_job_and_events(api: TestClient) -> None:
     r = api.post("/v1/items", json={"items": [item]})
     assert r.status_code == 202
     job_id = r.json()["job_id"]
-    for _ in range(100):
-        job = api.get(f"/v1/jobs/{job_id}").json()
-        if job["status"].startswith("completed"):
-            break
-        time.sleep(0.05)
+    job = wait_for(
+        lambda: (j := api.get(f"/v1/jobs/{job_id}").json())["status"].startswith("completed") and j,
+        message="ingestion job",
+    )
     assert job["status"] == "completed" and job["processed"] == 1
     assert api.get("/v1/items/new_doc").json()["title"] == "Brand new runbook"
 

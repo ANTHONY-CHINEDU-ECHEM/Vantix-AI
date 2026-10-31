@@ -1,0 +1,129 @@
+# Default values for the Vantix AI chart. Environment files (values_staging.yaml,
+# values_production.yaml) override these. Secrets are never stored here: reference an
+# existing Kubernetes Secret (created by your secrets manager or External Secrets).
+
+image:
+  repository: ghcr.io/OWNER/vantix
+  # Overridden by CD with the immutable tag of the image that passed CI.
+  tag: ""
+  # Optional digest; when set it takes precedence over the tag (recommended in production).
+  digest: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Extra labels on API and worker pods (CD sets "version").
+podLabels: {}
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automountServiceAccountToken: false
+
+# Name of an existing Secret holding sensitive VANTIX_ variables, for example
+# VANTIX_API_KEYS, VANTIX_ADMIN_API_KEYS, VANTIX_WEBHOOK_SECRET, VANTIX_DATABASE_URL,
+# VANTIX_LLM_API_KEY, VANTIX_EMBEDDING_API_KEY and VANTIX_QDRANT_API_KEY.
+existingSecret: vantix-secrets
+
+# Non sensitive configuration rendered into a ConfigMap and injected as environment variables.
+config:
+  VANTIX_ENVIRONMENT: production
+  VANTIX_LOG_LEVEL: INFO
+  VANTIX_LOG_JSON: "true"
+  VANTIX_VECTOR_BACKEND: qdrant
+  VANTIX_QDRANT_URL: http://qdrant:6333
+  VANTIX_LEXICAL_BACKEND: opensearch
+  VANTIX_OPENSEARCH_URL: http://opensearch:9200
+  VANTIX_RERANKER_PROVIDER: lexical
+  VANTIX_LLM_PROVIDER: extractive
+  VANTIX_MODEL_DIR: /data/models
+  VANTIX_MODEL_REFRESH_SECONDS: "30"
+
+api:
+  replicaCount: 2
+  workers: 2
+  resources:
+    requests: {cpu: 500m, memory: 1Gi}
+    limits: {memory: 2Gi}
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+worker:
+  enabled: true
+  # Seconds between training cycles; only tenants with new content or activity retrain.
+  trainingIntervalSeconds: 900
+  resources:
+    requests: {cpu: 500m, memory: 1Gi}
+    limits: {memory: 4Gi}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+migrations:
+  enabled: true
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+
+# Shared model store. The worker writes models; API replicas hot reload them.
+# Requires a ReadWriteMany storage class when API and worker pods can land on different nodes.
+persistence:
+  enabled: true
+  accessMode: ReadWriteMany
+  size: 10Gi
+  storageClass: ""
+  existingClaim: ""
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: vantix.example.internal
+      paths: [{path: /, pathType: Prefix}]
+  tls: []
+
+networkPolicy:
+  enabled: true
+  # Namespaces allowed to call the API (the host platform backend and the monitoring stack).
+  ingressFromNamespaces: []
+  # Pod label selectors in the same namespace allowed to call the API.
+  ingressFromPodLabels: []
+
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile: {type: RuntimeDefault}
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: {drop: [ALL]}
+
+topologySpread:
+  enabled: true
+  maxSkew: 1

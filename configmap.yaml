@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vantix.fullname" . }}
+  labels:
+    {{- include "vantix.labels" . | nindent 4 }}
+  annotations:
+    # Runs before the migration hook so the job can read configuration.
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+    helm.sh/resource-policy: keep
+data:
+  {{- range $key, $value := .Values.config }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}

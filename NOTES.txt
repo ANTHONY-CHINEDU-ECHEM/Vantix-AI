@@ -1,0 +1,14 @@
+Vantix AI {{ .Chart.AppVersion }} is deployed as release {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+Image: {{ include "vantix.image" . }}
+API service: http://{{ include "vantix.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+{{- if .Values.worker.enabled }}
+Training worker: {{ include "vantix.fullname" . }}-worker (interval {{ .Values.worker.trainingIntervalSeconds }}s)
+{{- end }}
+
+Verify the release:
+  helm test {{ .Release.Name }} --namespace {{ .Release.Namespace }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "vantix.fullname" . }} 8080:{{ .Values.service.port }}
+  python scripts/smoke_test.py http://127.0.0.1:8080 "$VANTIX_API_KEY"
+
+Secrets are read from the Secret "{{ .Values.existingSecret }}", which must exist before installation.

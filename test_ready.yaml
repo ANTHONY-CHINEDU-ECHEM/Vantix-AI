@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "vantix.fullname" . }}-test-ready
+  labels:
+    {{- include "vantix.labels" . | nindent 4 }}
+    {{- include "vantix.selectorLabels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    {{- toYaml .Values.podSecurityContext | nindent 4 }}
+  containers:
+    - name: ready
+      image: {{ include "vantix.image" . }}
+      command: ["python", "-c"]
+      args:
+        - |
+          import json, sys, urllib.request
+          body = json.load(urllib.request.urlopen("http://{{ include "vantix.fullname" . }}:{{ .Values.service.port }}/v1/ready", timeout=10))
+          print(body)
+          sys.exit(0 if body.get("ready") else 1)
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      resources:
+        requests: {cpu: 50m, memory: 64Mi}
+        limits: {memory: 128Mi}
