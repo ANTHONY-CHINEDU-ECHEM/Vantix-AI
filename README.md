@@ -2,7 +2,7 @@
 
 **Hybrid recommender and retrieval augmented generation engine for project management platforms.**
 
-Vantix AI is the intelligence layer built by Phexara Ltd to sit behind TaskTown and any other Phexara products that needs to connect people with the right knowledge, the right work and the right colleagues. It combines a production grade recommender system with a retrieval augmented generation (RAG) pipeline over a very large knowledge base, and exposes both through a single, versioned HTTP API that a host platform can integrate in days rather than months.
+Vantix AI is the intelligence layer combines a production grade recommender system with a retrieval augmented generation (RAG) pipeline over a very large knowledge base, and exposes both through a single, versioned HTTP API that a host platform can integrate in days rather than months.
 
 Vantix answers five questions for every user, in real time and strictly within that user's permissions:
 
