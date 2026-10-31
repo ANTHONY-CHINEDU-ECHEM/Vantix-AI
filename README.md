@@ -29,7 +29,6 @@ Every recommendation carries machine readable signals and human readable reasons
 The diagram below shows every runtime component and how data moves between the host platform, the Vantix service, the data plane and the model providers.
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#ffffff", "primaryTextColor": "#000000", "primaryBorderColor": "#000000", "secondaryColor": "#ffffff", "tertiaryColor": "#ffffff", "lineColor": "#000000", "clusterBkg": "#ffffff", "clusterBorder": "#000000", "edgeLabelBackground": "#ffffff", "background": "#ffffff", "mainBkg": "#ffffff", "nodeBorder": "#000000", "titleColor": "#000000", "fontFamily": "Helvetica, Arial"}}}%%
 flowchart TB
     subgraph HOST["HOST PLATFORM: ProWin and other Phexara products"]
         direction LR
@@ -101,23 +100,23 @@ flowchart TB
     end
 
     UI ==> BFF
-    BFF ==>|"reads on behalf of a principal"| AUTHN
-    BFF ==>|"same transaction as the change"| OUTBOX
+    BFF ==> AUTHN
+    BFF ==> OUTBOX
     OUTBOX ==> RELAY
-    RELAY ==>|"signed event batches"| SIGN
+    RELAY ==> SIGN
     AUTHN ==> LIMIT
     LIMIT ==> ROUTES
     SIGN ==> ROUTES
 
     ROUTES ==> EVENTS
-    EVENTS ==>|"interactions"| PG
-    EVENTS ==>|"item changes"| QUEUE
+    EVENTS ==> PG
+    EVENTS ==> QUEUE
     QUEUE ==> PIPELINE
     PIPELINE ==> EMBED
     EMBED ==> EMBMODEL
-    PIPELINE ==>|"items, chunks, vectors"| PG
-    PIPELINE ==>|"chunk vectors and ACL payload"| QDRANT
-    PIPELINE ==>|"chunk text and ACL fields"| OPENSEARCH
+    PIPELINE ==> PG
+    PIPELINE ==> QDRANT
+    PIPELINE ==> OPENSEARCH
 
     ROUTES ==> ASSIST
     ROUTES ==> RAG
@@ -126,10 +125,10 @@ flowchart TB
     ASSIST ==> RAG
     ASSIST ==> RECO
     RAG ==> RETRIEVER
-    RAG ==>|"numbered sources"| LLM
+    RAG ==> LLM
     RECO ==> RETRIEVER
-    RECO ==>|"profiles and history"| PG
-    RECO ==>|"factors, graph, popularity"| REGISTRY
+    RECO ==> PG
+    RECO ==> REGISTRY
     RETRIEVER ==> DENSE
     RETRIEVER ==> SPARSE
     DENSE ==> QDRANT
@@ -140,9 +139,9 @@ flowchart TB
     RERANK ==> RERANKMODEL
     RERANK ==> DIVERSE
 
-    EVENTS ==>|"mark tenant dirty"| SCHED
+    EVENTS ==> SCHED
     SCHED ==> TRAINER
-    TRAINER ==>|"interactions and items"| PG
+    TRAINER ==> PG
     TRAINER ==> ALS
     TRAINER ==> GRAPH
     TRAINER ==> STATS
@@ -154,6 +153,16 @@ flowchart TB
     ROUTES ==> METRICS
     ROUTES ==> LOGS
     ROUTES ==> PROBES
+
+    classDef default fill:none
+    style HOST fill:none
+    style API fill:none
+    style WRITE fill:none
+    style READ fill:none
+    style LEARN fill:none
+    style DATA fill:none
+    style PROVIDERS fill:none
+    style OPS fill:none
 ```
 
 ### Architectural principles
@@ -168,20 +177,19 @@ flowchart TB
 ### Ingestion and learning lifecycle
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#ffffff", "primaryTextColor": "#000000", "primaryBorderColor": "#000000", "secondaryColor": "#ffffff", "tertiaryColor": "#ffffff", "lineColor": "#000000", "clusterBkg": "#ffffff", "clusterBorder": "#000000", "edgeLabelBackground": "#ffffff", "background": "#ffffff", "mainBkg": "#ffffff", "nodeBorder": "#000000", "fontFamily": "Helvetica, Arial"}}}%%
 flowchart LR
     CHANGE["Change in the host<br/>task, page, comment, file"] ==> OUTBOX[("Outbox row")]
     OUTBOX ==> WEBHOOK["POST /v1/events<br/>signed batch"]
     WEBHOOK ==> VERIFY{"Signature valid and<br/>timestamp in window?"}
-    VERIFY ==>|"no"| REJECT["401 rejected"]
-    VERIFY ==>|"yes"| DEDUPE{"Event id<br/>already processed?"}
-    DEDUPE ==>|"yes"| SKIP["Counted as duplicate"]
-    DEDUPE ==>|"no, interaction"| INTERACTIONS[("Interactions table")]
-    DEDUPE ==>|"no, item upsert or delete"| JOB["Ingestion job<br/>queued with id"]
+    VERIFY ==> REJECT["If invalid:<br/>401 rejected"]
+    VERIFY ==> DEDUPE{"If valid: event id<br/>already processed?"}
+    DEDUPE ==> SKIP["If processed:<br/>counted as duplicate"]
+    DEDUPE ==> INTERACTIONS[("New interaction:<br/>interactions table")]
+    DEDUPE ==> JOB["New item upsert or delete:<br/>ingestion job queued with id"]
     JOB ==> FINGERPRINT{"Content and metadata<br/>fingerprints"}
-    FINGERPRINT ==>|"both unchanged"| NOOP["Skipped"]
-    FINGERPRINT ==>|"metadata only"| REFRESH["Refresh index payload<br/>reuse stored vectors"]
-    FINGERPRINT ==>|"content changed"| CHUNK["Normalise and chunk<br/>heading aware, overlapping"]
+    FINGERPRINT ==> NOOP["Both unchanged:<br/>skipped"]
+    FINGERPRINT ==> REFRESH["Metadata only changed:<br/>refresh index payload,<br/>reuse stored vectors"]
+    FINGERPRINT ==> CHUNK["Content changed:<br/>normalise and chunk,<br/>heading aware, overlapping"]
     CHUNK ==> VECTORS["Batch embed chunks<br/>and item vector"]
     VECTORS ==> PERSIST[("PostgreSQL<br/>transactional upsert")]
     PERSIST ==> INDEXES[("Qdrant and OpenSearch<br/>upsert and stale chunk removal")]
@@ -192,12 +200,13 @@ flowchart LR
     JOB ==> DIRTY
     DIRTY ==> RETRAIN["Scheduled retraining<br/>ALS, graph, popularity, expertise"]
     RETRAIN ==> SWAP["Model registry<br/>atomic swap and persist"]
+
+    classDef default fill:none
 ```
 
 ### Retrieval and recommendation pipeline
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#ffffff", "primaryTextColor": "#000000", "primaryBorderColor": "#000000", "secondaryColor": "#ffffff", "tertiaryColor": "#ffffff", "lineColor": "#000000", "clusterBkg": "#ffffff", "clusterBorder": "#000000", "edgeLabelBackground": "#ffffff", "background": "#ffffff", "mainBkg": "#ffffff", "nodeBorder": "#000000", "fontFamily": "Helvetica, Arial"}}}%%
 flowchart TB
     subgraph RETRIEVAL["HYBRID RETRIEVAL"]
         direction LR
@@ -222,8 +231,12 @@ flowchart TB
         DIV ==> WHY["Reasons from top<br/>contributing signals"]
     end
 
-    MMRR ==>|"context signal"| CAND
+    MMRR ==> CAND
     WHY ==> OUT["Ranked, explained results"]
+
+    classDef default fill:none
+    style RETRIEVAL fill:none
+    style RECOMMEND fill:none
 ```
 
 ## How the hybrid engine works
@@ -314,11 +327,23 @@ vantix/
     data/                    Sample workspace: items, events and labelled queries
     generate_sample_data.py  Deterministic sample data generator
     host_integration.py      Reference integration for a host platform
-  tests/             Unit, service and end to end API tests
-  Dockerfile         Multi stage, non root production image
+  tests/             Unit, service, contract, API and real backend integration tests
+  scripts/
+    smoke_test.py            Post deployment smoke test used by CD and by the container job
+    load_test.py             Concurrent load test with p95 latency and error budgets
+    quality_gate.py          Model quality gate against agreed metric floors
+    quality_thresholds.json  Floors for retrieval, recommendation and load metrics
+    check_readme.py          README house style enforcement
+    check_version.py         Release tag, package and chart version agreement
+    pin_actions.py           Pins every GitHub Action to an immutable commit SHA
+    mermaid/                 Renders every README diagram in light and dark themes
+  deploy/helm/vantix/  Helm chart: API, training worker, migration job, HPA, PDB, NetworkPolicy
+  requirements/      Hash verified runtime lock and development lock, generated by make lock
+  .github/           CI, CD, release, deploy, security, CodeQL and nightly workflows
+  Dockerfile         Hash verified, non root, read only friendly production image
   compose.yaml       Vantix with PostgreSQL, Qdrant and OpenSearch
   .env.example       Every configuration variable with defaults
-  Makefile           Common developer tasks
+  Makefile           Every CI check runnable locally (make help lists them)
 ```
 
 ## Quick start
@@ -386,6 +411,23 @@ docker compose up
 
 The image is multi stage, runs as a non root user, exposes port 8080, declares a health check against `/v1/health` and stores model artifacts in the `/data` volume.
 
+### Kubernetes with Helm
+
+The chart in `deploy/helm/vantix` runs the single image in three roles:
+
+<table>
+<tr><th>Role</th><th>Kubernetes object</th><th>Behaviour</th></tr>
+<tr><td>API</td><td>Deployment with HorizontalPodAutoscaler and PodDisruptionBudget</td><td><code>vantix serve</code>; zero downtime rolling updates, startup, liveness and readiness probes, topology spread across nodes</td></tr>
+<tr><td>Training worker</td><td>Deployment with exactly one replica</td><td><code>vantix worker</code>; retrains changed tenants and persists models that API pods hot reload; liveness through <code>vantix health</code></td></tr>
+<tr><td>Migrations</td><td>Job run as a pre install and pre upgrade hook</td><td><code>vantix migrate</code>; a failed migration fails the release before any new pod starts</td></tr>
+</table>
+
+Every pod runs as an unprivileged user with a read only root filesystem, all Linux capabilities dropped and the runtime default seccomp profile. A NetworkPolicy admits traffic only from namespaces and pods you list, and an optional ServiceMonitor scrapes `/v1/metrics`. Models live on a shared persistent volume (ReadWriteMany when pods can land on different nodes).
+
+Secrets are never placed in values files. Create a Kubernetes Secret containing `VANTIX_API_KEYS`, `VANTIX_DATABASE_URL`, `VANTIX_WEBHOOK_SECRET` and any provider keys, ideally through your secrets manager or External Secrets, and set the chart value `existingSecret` to its name. Then run `helm upgrade` with the install option, your namespace and the values file for the environment (`values_staging.yaml` or `values_production.yaml`).
+
+In practice the CD pipeline described below performs every deployment, pinning the image by digest and verifying its signature first. Released charts are also published to the GitHub container registry as OCI artifacts.
+
 ### Choosing model providers
 
 The offline defaults are excellent for development and CI. For production quality, configure a neural embedding model and a stronger reranker and language model. All providers are selected by environment variables.
@@ -441,10 +483,11 @@ VANTIX_LLM_API_KEY=your_key
 * **Lexical.** The OpenSearch index uses three primary shards and one replica by default, a strict mapping and keyword fields for every filter. Increase shards in proportion to corpus size.
 * **System of record.** Use PostgreSQL in production. Tables carry composite primary keys on tenant and identifier plus indexes for every access pattern used by the service. Embeddings are stored as compact float32 blobs, so indexes can always be rebuilt without calling the embedding provider again.
 * **Ingestion cost.** Unchanged items are skipped by fingerprint, metadata only changes (status, assignee, ACL) refresh index payloads without re embedding, and embedding calls are batched across items.
-* **API replicas.** The API is stateless with respect to request handling. Run several replicas behind a load balancer, set `VANTIX_WORKERS` per container, and size the ingestion thread pool with `VANTIX_INGESTION_WORKERS`.
-* **Recommender training.** Training is incremental in effect (only dirty tenants retrain) and runs off the request path. In a multi replica deployment, enable the background scheduler on one designated replica (set `VANTIX_REC_TRAINING_INTERVAL_SECONDS=0` on the others) and share `VANTIX_MODEL_DIR` through a mounted volume or object storage sync; other replicas pick up the persisted model on startup or through `POST /v1/admin/train`.
+* **API replicas.** With Qdrant, OpenSearch and PostgreSQL the API is stateless with respect to request handling. Run several replicas behind a load balancer, set `VANTIX_WORKERS` per container, and size the ingestion thread pool with `VANTIX_INGESTION_WORKERS`.
+* **Recommender training.** Run exactly one dedicated training worker (`vantix worker`). It polls PostgreSQL for tenants whose content version or interaction count changed since their last model, retrains only those, and persists models to the shared `VANTIX_MODEL_DIR`. API replicas run with `VANTIX_REC_TRAINING_INTERVAL_SECONDS=0` and hot reload newer models from that directory within `VANTIX_MODEL_REFRESH_SECONDS` (30 by default), with no restarts. The Helm chart wires this up for you.
+* **Schema migrations.** `vantix migrate` creates or upgrades the schema. On PostgreSQL it holds an advisory lock, so a migration job and many starting replicas can never race. The Helm chart runs it as a hook before every install and upgrade.
 * **Shared rate limiting.** The built in limiter is per process. When running many replicas, enforce tenant quotas at the API gateway as well.
-* **Memory backends.** The in memory vector and lexical indexes are intended for development, tests and single node deployments up to a few hundred thousand chunks. They are rebuilt from PostgreSQL automatically on startup.
+* **Memory backends.** The in memory vector and lexical indexes are intended for development, tests and single node deployments up to a few hundred thousand chunks. They live inside one process, so `vantix serve` runs a single worker process whenever a memory backend is configured. They are rebuilt from the system of record automatically on startup.
 
 ## Integration guide
 
@@ -686,7 +729,7 @@ Report what users do with Vantix output through `POST /v1/feedback`:
 
 ### Step 9: Keep models fresh
 
-Interactions and content changes mark a tenant as dirty. The background scheduler retrains dirty tenants every `VANTIX_REC_TRAINING_INTERVAL_SECONDS` (one hour by default), and the new model is swapped in atomically and persisted to `VANTIX_MODEL_DIR` for warm restarts. Between trainings, the content profile and the folded in collaborative vector already reflect each user's newest interactions. Trigger an immediate training run with `POST /v1/admin/train` or `vantix train TENANT`.
+In a single process deployment, interactions and content changes mark a tenant as dirty and the background scheduler retrains dirty tenants every `VANTIX_REC_TRAINING_INTERVAL_SECONDS` (one hour by default). In a multi replica deployment the dedicated training worker detects changes through the database instead, and API replicas hot reload the models it persists. Either way the new model is swapped in atomically and persisted to `VANTIX_MODEL_DIR` for warm restarts. Between trainings, the content profile and the folded in collaborative vector already reflect each user's newest interactions. Trigger an immediate training run with `POST /v1/admin/train` or `vantix train TENANT`.
 
 ### Serving several Phexara products
 
@@ -714,6 +757,7 @@ The full OpenAPI specification is served by every instance at `/openapi.json`, w
 <tr><td>POST</td><td><code>/v1/recommendations</code></td><td>Documents, tasks, similar items or experts</td><td>200</td></tr>
 <tr><td>POST</td><td><code>/v1/assist</code></td><td>Contextual assist for a task panel</td><td>200</td></tr>
 <tr><td>POST</td><td><code>/v1/feedback</code></td><td>Record user feedback on Vantix output</td><td>200</td></tr>
+<tr><td>DELETE</td><td><code>/v1/users/{user_id}/interactions</code></td><td>Right to erasure: delete a user's entire interaction history</td><td>200</td></tr>
 <tr><td>POST</td><td><code>/v1/admin/train</code></td><td>Retrain the tenant's recommender now</td><td>200</td></tr>
 <tr><td>POST</td><td><code>/v1/admin/reindex</code></td><td>Rebuild indexes from the system of record; <code>full=true</code> rechunks and re embeds</td><td>200</td></tr>
 <tr><td>GET</td><td><code>/v1/admin/stats</code></td><td>Item, chunk, interaction and index counts, model and provider details</td><td>200</td></tr>
@@ -850,7 +894,7 @@ Errors use one consistent body and stable machine readable codes. The request id
 <tr><td>401</td><td><code>unauthenticated</code></td><td>Missing or invalid API key, or an invalid, missing or expired webhook signature</td></tr>
 <tr><td>403</td><td><code>forbidden</code></td><td>An administrative key is required</td></tr>
 <tr><td>404</td><td><code>not_found</code></td><td>Item or job not found in the caller's tenant</td></tr>
-<tr><td>422</td><td>validation error</td><td>The request body does not match the schema</td></tr>
+<tr><td>422</td><td><code>validation_failed</code> or a schema error list</td><td>The request body, or an event in a batch, does not match the schema</td></tr>
 <tr><td>429</td><td><code>rate_limited</code></td><td>Too many requests for the key; a standard retry header gives the wait in seconds</td></tr>
 <tr><td>502</td><td><code>upstream_error</code></td><td>A model provider or index failed after bounded retries with exponential backoff</td></tr>
 <tr><td>503</td><td><code>queue_full</code></td><td>The ingestion queue is at capacity; retry with backoff</td></tr>
@@ -927,6 +971,8 @@ All settings are environment variables prefixed with `VANTIX_`, and can also be 
 <tr><td><code>VANTIX_REC_WEIGHTS_EXPERTS</code></td><td><code>content:0.35,graph:0.30,evidence:0.25,activity:0.10</code></td><td>Signal weights for experts</td></tr>
 <tr><td><code>VANTIX_REC_MMR_LAMBDA</code></td><td><code>0.8</code></td><td>Diversity balance for recommendations</td></tr>
 <tr><td colspan="3"><b>Workers</b></td></tr>
+<tr><td><code>VANTIX_MODEL_REFRESH_SECONDS</code></td><td><code>30</code></td><td>How often each process checks the model directory for a newer model to hot reload</td></tr>
+<tr><td><code>VANTIX_WORKER_HEARTBEAT_FILE</code></td><td><code>/tmp/vantix_worker_heartbeat</code></td><td>Heartbeat written by <code>vantix worker</code> and checked by <code>vantix health</code></td></tr>
 <tr><td><code>VANTIX_INGESTION_WORKERS</code></td><td><code>2</code></td><td>Background ingestion threads</td></tr>
 <tr><td><code>VANTIX_INGESTION_QUEUE_SIZE</code></td><td><code>10000</code></td><td>Maximum queued jobs before the API returns 503</td></tr>
 </table>
@@ -964,7 +1010,7 @@ The report includes precision, recall, nDCG, hit rate, mean reciprocal rank and 
 * **Access control everywhere.** ACL filters run inside Qdrant and OpenSearch queries and are rechecked in memory for every chunk. Recommendation explanations only reference items the principal can see.
 * **Authenticity of changes.** Webhooks are signed with HMAC SHA256, compared in constant time, and protected against replay with a timestamp window.
 * **Prompt injection hardening.** Sources are delimited, numbered and explicitly declared to be data; the model is instructed to ignore instructions inside sources; citations are validated after generation.
-* **Right to erasure.** An `item.deleted` event or `DELETE /v1/items/{item_id}` removes all of the item's chunks from every index and clears its stored embedding immediately. Interaction history can be purged per user directly in the system of record and is excluded from the next training run.
+* **Right to erasure.** An `item.deleted` event or `DELETE /v1/items/{item_id}` removes all of the item's chunks from every index and clears its stored embedding immediately. `DELETE /v1/users/{user_id}/interactions` erases a user's entire interaction history and schedules retraining, so the user disappears from collaborative and graph signals at the next training run.
 * **Data minimisation.** Only the fields the host sends are stored. Do not send fields that are not needed for search or recommendation.
 * **Secrets.** API keys, webhook secrets and provider keys are read from the environment only. Never commit them; use a secrets manager.
 * **Network posture.** Keep Vantix on a private network reachable only by the host backend. Expose `/v1/metrics` only to the monitoring system.
@@ -998,18 +1044,128 @@ Recommended alerts: readiness failing, error rate above 1 percent on any route, 
 
 **Backup and restore.** Back up PostgreSQL with your standard tooling; it contains everything required to restore service. Qdrant snapshots and OpenSearch snapshots shorten recovery time but are optional, because both can be rebuilt from PostgreSQL. Back up `VANTIX_MODEL_DIR` or simply retrain after restore.
 
-## Development and quality
+## Continuous integration and delivery
 
-```bash
-pip install ".[dev]"
-make test
-make lint
-make evaluate
+Every change to Vantix passes through an automated pipeline that tests it, scans it, measures its ranking quality, builds a signed image exactly once, and promotes that same image through staging to production. Nothing reaches production that has not passed every gate, and every deployment can roll itself back.
+
+```mermaid
+flowchart LR
+    subgraph PR["PULL REQUEST AND PUSH: CI"]
+        direction TB
+        STATIC["Static checks<br/>ruff, mypy, bandit,<br/>lockfile and SHA pin checks"]
+        DOCS["README policy<br/>and diagram rendering"]
+        TESTS["Tests on Python<br/>3.11, 3.12 and 3.13<br/>90 percent branch coverage"]
+        INTEG["Integration tests<br/>PostgreSQL, Qdrant,<br/>OpenSearch services"]
+        QUALITY["Model quality gate<br/>retrieval and<br/>recommendation floors"]
+        IMAGE["Container build,<br/>Trivy scan, hardened<br/>run and smoke test"]
+        CHART["Helm lint and<br/>kubeconform schemas"]
+        SEC["Security workflows<br/>CodeQL, dependency review,<br/>pip audit, Gitleaks, Trivy"]
+        GATE{"CI passed<br/>required check"}
+        STATIC ==> GATE
+        DOCS ==> GATE
+        TESTS ==> GATE
+        INTEG ==> GATE
+        QUALITY ==> GATE
+        IMAGE ==> GATE
+        CHART ==> GATE
+        SEC ==> GATE
+    end
+
+    subgraph MAIN["MERGE TO MAIN: CD"]
+        direction TB
+        BUILD["Build once<br/>amd64 and arm64"]
+        SIGN["Push to GHCR,<br/>SBOM, SLSA provenance,<br/>cosign keyless signature"]
+        STAGE["Deploy to staging<br/>verify signature, migrate,<br/>atomic rollout, helm test"]
+        STAGESMOKE{"Staging smoke test"}
+        BUILD ==> SIGN ==> STAGE ==> STAGESMOKE
+    end
+
+    subgraph TAG["VERSION TAG: RELEASE"]
+        direction TB
+        VERIFY["Version agreement<br/>and full CI rerun"]
+        PROMOTE["Promote the tested<br/>staging digest"]
+        PUBLISH["GitHub release:<br/>wheel, sdist, SBOM,<br/>Helm chart, checksums"]
+        APPROVE{"Production approval<br/>by required reviewers"}
+        PROD["Deploy to production<br/>signature verified,<br/>atomic, helm test"]
+        PRODSMOKE{"Production smoke test"}
+        VERIFY ==> PROMOTE ==> PUBLISH ==> APPROVE ==> PROD ==> PRODSMOKE
+    end
+
+    ROLLBACK["Automatic helm rollback<br/>to the last good revision"]
+
+    GATE ==> BUILD
+    STAGESMOKE ==> VERIFY
+    STAGESMOKE ==> ROLLBACK
+    PRODSMOKE ==> ROLLBACK
+
+    classDef default fill:none
+    style PR fill:none
+    style MAIN fill:none
+    style TAG fill:none
 ```
 
-* The test suite covers text processing, chunking, every index, fusion and reranking, ALS, Personalized PageRank, ranking metrics, ingestion change detection, ACL propagation, index rebuilding, full re embedding, the RAG service, citation validation, abstention, all four recommendation kinds, contextual assist, model persistence, the evaluation harness, and the HTTP API end to end including authentication, tenant isolation, webhook signatures, idempotency, streaming and validation errors.
-* `ruff` enforces formatting and lint rules; continuous integration runs lint, tests with coverage on Python 3.11, 3.12 and 3.13, and a Docker build on every push.
-* `python examples/generate_sample_data.py` regenerates the deterministic sample workspace; `python examples/host_integration.py` exercises a running server exactly as a host platform would.
+### Workflows
+
+<table>
+<tr><th>Workflow</th><th>Trigger</th><th>What it does</th></tr>
+<tr><td><code>ci.yml</code></td><td>Every pull request, push to main and merge queue; reused by releases</td><td>Lint, formatting, types, Bandit, lockfile freshness, Action SHA pinning, README policy with diagram rendering in light and dark themes, tests on three Python versions with a 90 percent branch coverage gate, the full suite against real PostgreSQL, Qdrant and OpenSearch service containers, the model quality gate, a container build with hadolint, a Trivy image scan, a hardened container run (read only root filesystem, no capabilities, non root) followed by the smoke test and worker checks, Helm lint and kubeconform validation of every values file, and actionlint. A final <code>CI passed</code> job aggregates everything for branch protection</td></tr>
+<tr><td><code>security.yml</code></td><td>Pull requests, main and weekly</td><td>Dependency review on pull requests, pip audit of both lockfiles, Bandit with SARIF upload, Gitleaks over the full history, Trivy filesystem, secret and misconfiguration scanning, and OpenSSF Scorecard</td></tr>
+<tr><td><code>codeql.yml</code></td><td>Pull requests, main and weekly</td><td>CodeQL security and quality analysis of the Python code, the workflows and the diagram validator</td></tr>
+<tr><td><code>cd.yml</code></td><td>CI succeeding on a push to main</td><td>Builds the image once for linux/amd64 and linux/arm64, pushes it to GHCR with an SBOM and SLSA provenance, signs it keylessly with Sigstore cosign, attests provenance, then deploys it to staging</td></tr>
+<tr><td><code>release.yml</code></td><td>A version tag such as <code>v1.2.0</code></td><td>Checks that the tag, package, module and chart versions agree, reruns CI on the tagged commit, promotes the already tested image by digest (building only if CD never built that commit), publishes Python distributions, the image SBOM, the Helm chart and checksums as a GitHub release, then deploys to production; pre release tags such as <code>v1.2.0rc1</code> deploy to staging instead</td></tr>
+<tr><td><code>deploy.yml</code></td><td>Called by CD and release, or run by hand</td><td>Resolves the image to a digest, verifies its signature came from this repository's pipelines, records the current revision, runs an atomic Helm upgrade (migrations first, waits for healthy pods), runs <code>helm test</code> and the live smoke test, and rolls back automatically if anything fails</td></tr>
+<tr><td><code>nightly.yml</code></td><td>Daily</td><td>Runs the suite against the newest PostgreSQL, Qdrant and OpenSearch releases, a concurrent load test against p95 latency and error budgets, and a full quality report; any failure opens or updates a tracking issue</td></tr>
+</table>
+
+### Quality gates
+
+* **Correctness.** Unit, service, contract and API tests; the same contract tests run against every vector and lexical backend, so access control and tenant isolation are proven on Qdrant and OpenSearch as well as in memory.
+* **Coverage.** Branch coverage must stay at or above 90 percent.
+* **Ranking quality.** `scripts/quality_gate.py` fails the build if retrieval nDCG, mean reciprocal rank, recall or hit rate, or recommender hit rate or catalogue coverage fall below the floors in `scripts/quality_thresholds.json`. The report appears in the job summary.
+* **Performance.** The nightly load test fails when p95 latency exceeds the budget or any request errors.
+* **Supply chain.** Hash verified lockfiles, Actions pinned to commit SHAs, dependency review, vulnerability audits, image scanning, signed images with SBOM and provenance, and signature verification before every deployment.
+* **Documentation.** `scripts/check_readme.py` and the Mermaid validator keep this README free of dashes and tables of contents, and keep every diagram free of fills and backgrounds.
+
+### One time GitHub configuration
+
+1. **Branch protection on main.** Require pull requests, at least one review from code owners, and the status checks `CI passed`, `Analyze (python)` and the security jobs. Enable the merge queue if you use it.
+2. **Environments.** Create `staging` and `production` under Settings, Environments. Give `production` required reviewers and restrict it to tags matching `v*`.
+3. **Environment variables.** For each environment set `KUBE_NAMESPACE`, `VANTIX_URL` (the public base URL) and optionally `HELM_RELEASE`.
+4. **Environment secrets.** For each environment set `KUBE_CONFIG` (a base64 encoded kubeconfig for a service account limited to the namespace), `VANTIX_SMOKE_API_KEY` (a key for a dedicated smoke test tenant) and `VANTIX_SMOKE_WEBHOOK_SECRET`.
+5. **Packages.** The workflows publish to `ghcr.io/OWNER/vantix` and `ghcr.io/OWNER/charts` with the built in token. Grant the cluster pull access, or make the package internal to your organisation.
+6. **Code owners.** Replace the placeholder team handles in `.github/CODEOWNERS`, and the image repository in `deploy/helm/vantix/values.yaml`.
+7. **Security features.** Enable Dependabot alerts, secret scanning with push protection, and code scanning so that SARIF results appear under the Security tab.
+
+### Releasing
+
+1. Bump the version in `pyproject.toml`, `src/vantix/__init__.py` and `deploy/helm/vantix/Chart.yaml`, and add a `CHANGELOG.md` entry.
+2. Merge to main. CD deploys the commit to staging automatically.
+3. Tag the merged commit and push the tag:
+
+   ```bash
+   git tag v1.2.0
+   git push origin v1.2.0
+   ```
+
+4. Approve the production deployment when GitHub asks. The release promotes the exact image that ran in staging.
+
+To roll back by hand, run the Deploy workflow from the Actions tab with the previous version's image reference; it is verified and deployed exactly like a release.
+
+### Running the pipeline locally
+
+Every CI check has a Make target, so problems surface before a push. `make help` lists them all.
+
+```bash
+make dev        # locked development dependencies and an editable install
+make ci         # lint, types, security, README policy, tests with coverage, quality gate
+make docker     # production image
+make lock       # regenerate lockfiles after changing dependencies (requires uv)
+make pin        # repin GitHub Actions to the newest commit SHA of each major version
+```
+
+To run the integration suite against real backends, start them with `docker compose up` and set `VANTIX_TEST_DATABASE_URL`, `VANTIX_TEST_QDRANT_URL` and `VANTIX_TEST_OPENSEARCH_URL` before `make integration`. Each test gets its own PostgreSQL schema, Qdrant collection and OpenSearch index, so runs never interfere. The precommit configuration in the repository root runs the fast checks on every commit.
+
+`python examples/generate_sample_data.py` regenerates the deterministic sample workspace, and `python examples/host_integration.py` exercises a running server exactly as a host platform would.
 
 ## Extending Vantix
 
@@ -1038,6 +1194,11 @@ Index adapters must apply `SearchFilter` inside the backend query and return onl
 <tr><td>Recommendations are not personalised</td><td>No interactions are being sent, or no training run has happened yet; check <code>model_trained_at</code> and send <code>interaction.recorded</code> events</td></tr>
 <tr><td>Permission change not reflected</td><td>Send an <code>item.upserted</code> event with the updated <code>acl</code>; results update as soon as the job completes</td></tr>
 <tr><td>Startup fails with a dimension error</td><td><code>VANTIX_EMBEDDING_DIM</code> does not match the model or the existing Qdrant collection; follow the embedding model change procedure</td></tr>
+<tr><td>CI fails on the lockfile check</td><td>Dependencies in <code>pyproject.toml</code> changed without regenerating the locks; run <code>make lock</code> and commit both files</td></tr>
+<tr><td>CI fails the quality gate</td><td>A change lowered ranking quality; compare the job summary with the previous run, and only lower a floor in <code>scripts/quality_thresholds.json</code> with a written justification</td></tr>
+<tr><td>Deploy fails at signature verification</td><td>The image was not built and signed by this repository's CD or release workflow, for example a manually pushed tag; deploy a digest produced by the pipeline</td></tr>
+<tr><td>Deploy rolled back automatically</td><td>The rollout, <code>helm test</code> or the smoke test failed; the job log and summary show which step, and the previous revision is already serving traffic</td></tr>
+<tr><td>Recommendations stop improving in Kubernetes</td><td>Check the worker pod: <code>vantix health</code> must pass and its log should list trained tenants; API pods hot reload models from the shared volume</td></tr>
 <tr><td>Ingestion returns 503</td><td>The queue is full; slow the relay down, retry with backoff, or raise <code>VANTIX_INGESTION_WORKERS</code></td></tr>
 </table>
 
