@@ -1,0 +1,15 @@
+{"query": "how do I roll back a bad deployment", "relevant_item_ids": ["kb_deploy_runbook"], "principal": {"user_id": "evaluator", "is_admin": true}}
+{"query": "what happens when a refresh token is reused", "relevant_item_ids": ["kb_oauth"], "principal": {"user_id": "evaluator", "is_admin": true}}
+{"query": "API returns 429 too many requests", "relevant_item_ids": ["kb_api_rate_limits"], "principal": {"user_id": "evaluator", "is_admin": true}}
+{"query": "adding an index to a huge table", "relevant_item_ids": ["kb_db_migrations"], "principal": {"user_id": "evaluator", "is_admin": true}}
+{"query": "when is the mobile release branch cut", "relevant_item_ids": ["kb_mobile_release"], "principal": {"user_id": "evaluator", "is_admin": true}}
+{"query": "code signing error provisioning profile", "relevant_item_ids": ["kb_ios_signing"], "principal": {"user_id": "evaluator", "is_admin": true}}
+{"query": "how long do we keep billing records", "relevant_item_ids": ["kb_data_retention"], "principal": {"user_id": "evaluator", "is_admin": true}}
+{"query": "who approves access to raw personal data", "relevant_item_ids": ["kb_warehouse_access"], "principal": {"user_id": "evaluator", "is_admin": true}}
+{"query": "why did we choose kafka", "relevant_item_ids": ["dec_queue_choice"], "principal": {"user_id": "evaluator", "is_admin": true}}
+{"query": "status page update during an outage", "relevant_item_ids": ["kb_incident_response"], "principal": {"user_id": "evaluator", "is_admin": true}}
+{"query": "minimum contrast ratio for text", "relevant_item_ids": ["kb_accessibility"], "principal": {"user_id": "evaluator", "is_admin": true}}
+{"query": "secret committed to git by mistake", "relevant_item_ids": ["kb_secret_rotation"], "principal": {"user_id": "evaluator", "is_admin": true}}
+{"query": "reduce warehouse costs", "relevant_item_ids": ["kb_cost_optimisation"], "principal": {"user_id": "evaluator", "is_admin": true}}
+{"query": "quiet hours for notifications", "relevant_item_ids": ["kb_push_notifications"], "principal": {"user_id": "evaluator", "is_admin": true}}
+{"query": "how big should a pull request be", "relevant_item_ids": ["kb_code_review"], "principal": {"user_id": "evaluator", "is_admin": true}}

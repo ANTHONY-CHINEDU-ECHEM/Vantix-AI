@@ -1,0 +1,68 @@
+# Production shaped local stack: Vantix with PostgreSQL, Qdrant and OpenSearch.
+# Start with: docker compose up
+name: vantix
+
+services:
+  vantix:
+    build: .
+    env_file: .env
+    environment:
+      VANTIX_DATABASE_URL: postgresql+psycopg://vantix:vantix@postgres:5432/vantix
+      VANTIX_VECTOR_BACKEND: qdrant
+      VANTIX_QDRANT_URL: http://qdrant:6333
+      VANTIX_LEXICAL_BACKEND: opensearch
+      VANTIX_OPENSEARCH_URL: http://opensearch:9200
+      VANTIX_MODEL_DIR: /data/models
+    ports:
+      - "8080:8080"
+    volumes:
+      - vantix_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      opensearch:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: vantix
+      POSTGRES_PASSWORD: vantix
+      POSTGRES_DB: vantix
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "vantix"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "6333:6333"
+
+  opensearch:
+    image: opensearchproject/opensearch:2.17.1
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms1g -Xmx1g
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  vantix_data:
+  postgres_data:
+  qdrant_data:
+  opensearch_data:
